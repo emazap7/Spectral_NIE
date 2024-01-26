@@ -20,9 +20,6 @@ from torchcubicspline import(natural_cubic_spline_coeffs,
 from spectral_source.utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset
 from torch.utils.data import SubsetRandomSampler
 
-from spectral_source.Attentional_IE_solver import Integral_attention_solver, Integral_spatial_attention_solver, Integral_spatial_attention_solver_multbatch
-from spectral_source.kernels import RunningAverageMeter, log_normal_pdf, normal_kl
-
 from spectral_source.spectral_integrator import Chebyshev_nchannel, spectral_integrator_nchannels, spectral_integrator, Chebyshev
 from spectral_source.spectral_ie_solver import Spectral_IE_solver
 from spectral_source.utils import spectral_dataset, plot_dim_vs_time
