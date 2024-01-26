@@ -19,7 +19,7 @@ from torch.autograd import Variable
 use_cuda = torch.cuda.is_available()
 
 from functools import reduce
-from spectral_source import kernels, integrators 
+from spectral_source import integrators 
 from spectral_source.utils import to_np
 import random
 import pickle
