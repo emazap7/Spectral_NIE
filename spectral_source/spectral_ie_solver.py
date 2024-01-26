@@ -35,7 +35,7 @@ import matplotlib as mpl
 import matplotlib.cm as cm
 
 from functools import reduce
-from spectral_source import kernels, integrators 
+from spectral_source import integrators 
 from spectral_source.utils import to_np
 import random
 
