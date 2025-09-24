@@ -509,6 +509,11 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                 plt.figure(counter+len(test_loader), figsize=(8,8),facecolor='w')
                 plt.imshow(obs_p.transpose(0,1))
                 plt.show()
+                plt.figure(counter+2*len(test_loader), figsize=(8,8),facecolor='w')
+                im = plt.imshow(diff_p.transpose(0,1),cmap="inferno")
+                plt.colorbar(im, label="Error intensity",shrink=0.3)  
+                plt.title("Pixel-wise Error Map")
+                plt.show()
             
             del obs_test, z_test, a_test, coeff_test
 
