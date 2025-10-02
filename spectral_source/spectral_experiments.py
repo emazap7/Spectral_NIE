@@ -10,6 +10,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.decomposition import PCA
 from torch.utils.data import Dataset
 from scipy.ndimage import gaussian_filter
+import matplotlib.gridspec as gridspec
 
 import torchcubicspline
 
@@ -19,7 +20,10 @@ from torchcubicspline import(natural_cubic_spline_coeffs,
 #Custom libraries
 from spectral_source.utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset
 from torch.utils.data import SubsetRandomSampler
-
+#from spectral_source.solver import IESolver_monoidal
+from spectral_source.Attentional_IE_solver import Integral_attention_solver, Integral_spatial_attention_solver, Integral_spatial_attention_solver_multbatch
+from spectral_source.kernels import RunningAverageMeter, log_normal_pdf, normal_kl
+#from spectral_source.utils import plot_reconstruction
 from spectral_source.spectral_integrator import Chebyshev_nchannel, spectral_integrator_nchannels, spectral_integrator, Chebyshev
 from spectral_source.spectral_ie_solver import Spectral_IE_solver
 from spectral_source.utils import spectral_dataset, plot_dim_vs_time
@@ -54,12 +58,9 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
         
         print('path_to_experiment: ',path_to_experiment)
         txt = os.listdir(path_to_experiment)
-        if len(txt) == 0:
-            num_experiments=0
-        else: 
-            num_experiments = [int(i[3:]) for i in txt]
-            num_experiments = np.array(num_experiments).max()
-         
+
+        num_experiments= len(txt)
+        print("run:", num_experiments)
         
         path_to_save_plots = os.path.join(path_to_experiment,'run'+str(num_experiments+1),'plots')
         path_to_save_models = os.path.join(path_to_experiment,'run'+str(num_experiments+1),'model')
@@ -67,6 +68,11 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
             os.makedirs(path_to_save_plots)
         if not os.path.exists(path_to_save_models):
             os.makedirs(path_to_save_models)
+            
+        #with open(os.path.join(writer.log_dir,'commandline_args.txt'), 'w') as f:
+        #    for key, value in args.__dict__.items(): 
+        #        f.write('%s:%s\n' % (key, value))
+
 
 
     obs = Data
@@ -102,6 +108,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
     elif args.lr_scheduler == 'CosineAnnealingLR':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.T_max, eta_min=args.min_lr,last_epoch=-1)
 
+    # optimizer = torch.optim.Adam(model.parameters(), args.lr, weight_decay=args.weight_decay)
     if args.resume_from_checkpoint is not None:
         path = os.path.join(args.root_path,args.model,args.experiment_name,args.resume_from_checkpoint,'model')
         
@@ -110,10 +117,25 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
     
     
     if args.mode=='train':
+        #lr_scheduler = LRScheduler(optimizer,patience = 50,min_lr=1e-5,factor=0.1)
         early_stopping = EarlyStopping(patience=args.patience,min_delta=0)
 
+        # Loss_print = []
+        # Val_Loss = []
         all_train_loss=[]
         all_val_loss=[]
+        
+            
+#         Data_splitting_indices = Train_val_split(np.copy(index_np),0)
+#         Train_Data_indices = Data_splitting_indices.train_IDs()
+#         Val_Data_indices = Data_splitting_indices.val_IDs()
+#         print('\nlen(Train_Data_indices): ',len(Train_Data_indices))
+#         print('Train_Data_indices: ',Train_Data_indices)
+#         print('\nlen(Val_Data_indices): ',len(Val_Data_indices))
+#         print('Val_Data_indices: ',Val_Data_indices)
+        
+        # Train Neural IDE
+#         get_times = Select_times_function(times,extrapolation_points)
 
         save_best_model = SaveBestModel()
         
@@ -138,12 +160,20 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
             
             start_i = time.time()
             print('Epoch:',i)
-            
+            # GPUtil.showUtilization()
             counter=0
             train_loss = 0.0
             
+#             perm = torch.randperm(obs.shape[0]).to(device)
+#             perm2 = perm.clone()
+#             spectral_shuffle, obs_shuffle = spectral_train[perm,...], obs_train[perm2,...]
+            #spectral_shuffle, obs_shuffle = spectral_train[...], obs_train[...]
+                
+            #for j in tqdm(range(0,spectral_coefficients.size(0)-split_size,args.n_batch)):
             for  obs_, coeff_ in tqdm(train_loader): 
                 
+#                 coeff_ = spectral_shuffle[j:j+args.n_batch,...]
+#                 obs_ = obs_shuffle[j:j+args.n_batch,...]
                 nCheb = Chebyshev_nchannel(max_deg=args.max_deg,n_batch=obs_.shape[0],N_mc=args.N_MC,channels=args.dim,device=args.device)
                 transform = nCheb
                 
@@ -152,17 +182,25 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                     
                 if args.perturbation_to_obs0 is not None:
                        perturb = torch.normal(mean=torch.zeros(obs_.shape[1]).to(args.device),
-                                              std=args.std_noise)
+                                              std=args.std_noise)#args.perturbation_to_obs0*obs_[:3,:].std(dim=0))
                 else:
                     perturb = torch.zeros_like(coeff_[0]).to(args.device)
                 
                 
                 
                 c= lambda x: f_func.forward(x.to(args.device).requires_grad_(True))
+
+                
+                    
+#                 if args.ts_integration is not None:
+#                     times_integration = args.ts_integration
+#                 else:
+#                     times_integration = torch.linspace(0,1,args.time_points)
                 
                 
                 y_0 = c(coeff_)
                 
+                #start_ = time.time()
                 a_ = Spectral_IE_solver(
                             x = torch.linspace(0,1,args.max_deg).to(device),
                             y_0 = y_0,
@@ -180,23 +218,29 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                             return_function = False,
                             accumulate_grads = True,        
                             ).solve()
+                #end_ = time.time()
+                #print("Solving time: ", end_-start_)
 
                 
                 a_ = a_.view(a_.shape[0],args.max_deg,args.dim)
-                
+                #_start_ = time.time()
                 if chebyshev_transform is not None:
                     a_func = transform.inverse(a_.requires_grad_(True))
                     z_ = a_func(times.requires_grad_(True))
                 elif cosine_transform is not None:
                     z_ = transform.inverse(a_) 
+                #_end_ = time.time()
+                #print("Decoding: ",_end_-_start_)
                 
                 loss = F.mse_loss(z_, obs_)
                 
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
                 
+                #_start = time.time()
+                optimizer.zero_grad()
+                loss.backward()#(retain_graph=True)
+                optimizer.step()
+                #_end = time.time()
+                #print("Backward: ",_end-_start)
                 
                 counter += 1
                 train_loss += loss.item()
@@ -210,7 +254,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
             if  split_size==0 and args.lr_scheduler != 'CosineAnnealingLR':
                 scheduler.step(train_loss)
                    
-            del train_loss, loss, obs_, z_
+            del train_loss, loss, obs_, z_, #ts_, ids_
 
             ## Validating
                 
@@ -219,11 +263,14 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                 f_func.eval()
                 
             with torch.no_grad():
+
+                    #Only do this if there is a validation dataset
                 
                 val_loss = 0.0
                 counter = 0
                 if split_size>0:
                     
+                    #for j in tqdm(range(obs.size(0)-split_size,obs.size(0),args.n_batch)):
                     for  obs_val, coeff_val in tqdm(valid_loader):  
                         
                         nCheb = Chebyshev_nchannel(max_deg=args.max_deg,n_batch=obs_val.shape[0],N_mc=args.N_MC,channels=args.dim,device=args.device)
@@ -235,7 +282,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
 
                         if args.perturbation_to_obs0 is not None:
                                perturb = torch.normal(mean=torch.zeros(obs_val.shape[1]).to(args.device),
-                                                      std=args.std_noise)
+                                                      std=args.std_noise)#args.perturbation_to_obs0*obs_[:3,:].std(dim=0))
                         else:
                             perturb = torch.zeros_like(coeff_val[0]).to(args.device)
 
@@ -243,9 +290,17 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
 
                         c= lambda x: f_func.forward(x.to(args.device))
 
-                        y_0 = c(coeff_val)
+
+
+#                         if args.ts_integration is not None:
+#                             times_integration = args.ts_integration
+#                         else:
+#                             times_integration = torch.linspace(0,1,args.time_points)
 
                         
+                        y_0 = c(coeff_val)
+
+                        #start_ = time.time()
                         a_val = Spectral_IE_solver(
                                     x = torch.linspace(0,1,args.max_deg).to(device),
                                     y_0 = y_0,
@@ -263,16 +318,19 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                                     return_function = False,
                                     accumulate_grads = False,        
                                     ).solve()
+                        #end_ = time.time()
+                        #print("Solving time: ", end_-start_)
                         
 
                         a_val = a_val.view(a_val.shape[0],args.max_deg,args.dim)
-                        
+                        #_start_ = time.time()
                         if chebyshev_transform is not None:
                             a_func = transform.inverse(a_val)
                             z_val = a_func(times)
                         elif cosine_transform is not None:
                             z_val = transform.inverse(a_val) 
-                        
+                        #_end_ = time.time()
+                        #print("Decoding: ",_end_-_start_)
 
                         loss_validation = F.mse_loss(z_val, obs_val)
                         
@@ -283,6 +341,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                         
                         del loss_validation
 
+                        #LRScheduler(loss_validation)
                         if args.lr_scheduler == 'ReduceLROnPlateau':
                             scheduler.step(val_loss)
                 
@@ -293,6 +352,14 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                 all_val_loss.append(val_loss)
                 
                 del val_loss
+
+            #writer.add_scalar('train_loss', all_train_loss[-1], global_step=i)
+            #if len(all_val_loss)>0:
+            #    writer.add_scalar('val_loss', all_val_loss[-1], global_step=i)
+            #if args.lr_scheduler == 'ReduceLROnPlateau':
+            #    writer.add_scalar('Epoch/learning_rate', optimizer.param_groups[0]['lr'], global_step=i)
+            #elif args.lr_scheduler == 'CosineAnnealingLR':
+            #    writer.add_scalar('Epoch/learning_rate', scheduler.get_last_lr()[0], global_step=i)
 
             
             with torch.no_grad():
@@ -305,15 +372,20 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                 if i % args.plot_freq == 0:
                     
                     plt.figure(0, figsize=(8,8),facecolor='w')
-                    
+                    # plt.plot(np.linspace(0,len(Loss_print),len(Loss_print)),np.log10(Loss_print))
+                    # plt.plot(np.linspace(0,len(Val_Loss),len(Val_Loss)),np.log10(Val_Loss))
                         
                     plt.plot(np.log10(all_train_loss),label='Train loss')
                     if split_size>0:
                         plt.plot(np.log10(all_val_loss),label='Val loss')
                     plt.xlabel("Epoch")
                     plt.ylabel("MSE Loss")
-                    
+                    # timestr = time.strftime("%Y%m%d-%H%M%S")
+                    #plt.show()
                     plt.savefig(os.path.join(path_to_save_plots,'losses'))
+
+#                     for j in tqdm(range(0,obs.size(0),args.n_batch)):
+                        
                         
                     coeff_test = spectral_coefficients[:args.n_batch,...]
                     obs_test = obs[:args.n_batch,...]
@@ -327,7 +399,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
 
                     if args.perturbation_to_obs0 is not None:
                            perturb = torch.normal(mean=torch.zeros(obs_test.shape[1]).to(args.device),
-                                                  std=args.std_noise)
+                                                  std=args.std_noise)#args.perturbation_to_obs0*obs_[:3,:].std(dim=0))
                     else:
                         perturb = torch.zeros_like(coeff_test[0]).to(args.device)
 
@@ -335,10 +407,17 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
 
                     c= lambda x: f_func.forward(x.to(args.device))
 
+
+
+#                         if args.ts_integration is not None:
+#                             times_integration = args.ts_integration
+#                         else:
+#                             times_integration = torch.linspace(0,1,args.time_points)
+
                     
                     y_0 = c(coeff_test)
 
-                    
+                    #start_ = time.time()
                     a_test = Spectral_IE_solver(
                                 x = torch.linspace(0,1,args.max_deg).to(device),
                                 y_0 = y_0,
@@ -356,16 +435,19 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                                 return_function = False,
                                 accumulate_grads = False,        
                                 ).solve()
+                    #end_ = time.time()
+                    #print("Solving time: ", end_-start_)
 
 
                     a_test = a_test.view(a_test.shape[0],args.max_deg,args.dim)
-                    
+                    #_start_ = time.time()
                     if chebyshev_transform is not None:
                         a_func = transform.inverse(a_test)
                         z_test = a_func(times)
                     elif cosine_transform is not None:
                         z_test = transform.inverse(a_test) 
-                    
+                    #_end_ = time.time()
+                    #print("Decoding: ",_end_-_start_)
 
 
 
@@ -377,7 +459,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                     obs_print = to_np(obs_test[0,...])
 
                     if args.dataset_name == 'fMRI' is False:
-                        
+                        #plot_reconstruction(obs_print, z_p, None, path_to_save_plots, 'plot_epoch_', i, args)
                         plt.figure(1, figsize=(8,8),facecolor='w')
 
                         plt.scatter(obs_print[:,0],obs_print[:,1],label='Data')
@@ -394,7 +476,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                         
 
             end_i = time.time()
-            
+            # print(f"Epoch time: {(end_i-start_i)/60:.3f} seconds")
 
             
             model_state = {
@@ -431,7 +513,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
         print('Running in evaluation mode')
 
         Dataset_test = spectral_dataset(Data,spectral_coefficients)
-        
+        # test_loader = torch.utils.data.DataLoader(Dataset_test,batch_size=args.n_batch,shuffle=False)
         test_loader = torch.utils.data.DataLoader(Dataset_test,batch_size=1,shuffle=False)
         
         ## Validating
@@ -445,6 +527,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
         
         for  obs_test, coeff_test in tqdm(test_loader): 
         
+            #nCheb = Chebyshev_nchannel(max_deg=args.max_deg,n_batch=args.n_batch,N_mc=10000,device=args.device)
             nCheb = Chebyshev_nchannel(max_deg=args.max_deg,n_batch=1,N_mc=args.N_MC,channels=args.dim,device=args.device)
             transform = nCheb
     
@@ -454,7 +537,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
     
             if args.perturbation_to_obs0 is not None:
                    perturb = torch.normal(mean=torch.zeros(obs_test.shape[1]).to(args.device),
-                                          std=args.std_noise)
+                                          std=args.std_noise)#args.perturbation_to_obs0*obs_[:3,:].std(dim=0))
             else:
                 perturb = torch.zeros_like(coeff_test[0]).to(args.device)
     
@@ -486,7 +569,7 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
     
     
             a_test = a_test.view(a_test.shape[0],args.max_deg,args.dim)
-            
+            #_start_ = time.time()
             if chebyshev_transform is not None:
                 a_func = transform.inverse(a_test)
                 z_test = a_func(times)
@@ -502,17 +585,26 @@ def spectral_experiment(model, Data, spectral_coefficients, interpolator, time_s
                 z_p = gaussian_filter(z_p,sigma=3)
                 obs_p = to_np(obs_test[0,...])
                 obs_p = gaussian_filter(obs_p,sigma=3)
+                diff_p = np.abs(z_p-obs_p)**2
                 
-                plt.figure(counter, figsize=(8,8),facecolor='w')
-                plt.imshow(z_p.transpose(0,1))
-                plt.show()
-                plt.figure(counter+len(test_loader), figsize=(8,8),facecolor='w')
-                plt.imshow(obs_p.transpose(0,1))
-                plt.show()
-                plt.figure(counter+2*len(test_loader), figsize=(8,8),facecolor='w')
-                im = plt.imshow(diff_p.transpose(0,1),cmap="inferno")
-                plt.colorbar(im, label="Error intensity",shrink=0.3)  
-                plt.title("Pixel-wise Error Map")
+                save_dir = "Eval_plots"
+                os.makedirs(save_dir, exist_ok=True)
+                fig, axs = plt.subplots(3, 2, figsize=(8, 8), gridspec_kw={'width_ratios': [20, 1]})
+                # First image (full width)
+                axs[0, 0].imshow(z_p)
+                axs[0, 1].axis("off")  # empty slot
+                # Second image (full width)
+                axs[1, 0].imshow(obs_p)
+                axs[1, 1].axis("off")
+                # Third image with colorbar
+                im = axs[2, 0].imshow(diff_p, cmap="inferno")
+                axs[2, 0].set_title("Error Map")
+                cbar = fig.colorbar(im, cax=axs[2, 1],shrink=0.75) 
+                cbar.set_label("Error intensity")
+                plt.tight_layout()
+                # Save in Eval_plots
+                save_path = os.path.join(save_dir, f"output{counter}.png")
+                plt.savefig(save_path, dpi=300)
                 plt.show()
             
             del obs_test, z_test, a_test, coeff_test
